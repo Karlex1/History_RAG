@@ -1,5 +1,3 @@
-# asking query-> vector query->search into vector db -> take top chunks -> give to llm into prompt with rule ...
-
 import os
 from dotenv import load_dotenv
 
@@ -9,30 +7,51 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from sentence_transformers import CrossEncoder
 
+print("🚀 Chainlit app is starting...")
+
 load_dotenv()
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY is not set in the .env file.")
+    raise ValueError("GEMINI_API_KEY is not set in the environment.")
 
 VECTOR_DB_PATH = "history_vector_db"
 EMBEDDING_MODEL_NAME = "BAAI/bge-base-en-v1.5"
 RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
-GENERATION_MODEL = "gemini-3.1-flash-lite-preview"
+GENERATION_MODEL = "gemini-2.5-flash"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-embeddings = HuggingFaceEmbeddings(
-    model_name=EMBEDDING_MODEL_NAME
-)
+embeddings = None
+db = None
+reranker = None
 
-db = FAISS.load_local(
-    VECTOR_DB_PATH,
-    embeddings,
-    allow_dangerous_deserialization=True
-)
+def load_rag_components():
+    global embeddings, db, reranker
 
-reranker = CrossEncoder(RERANKER_MODEL_NAME)
+    if embeddings is None:
+        print("📦 Loading embeddings model...")
+        embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+        print("✅ Embeddings model loaded")
 
+    if db is None:
+        print("📚 Loading FAISS vector DB...")
+        if not os.path.exists(VECTOR_DB_PATH):
+            raise FileNotFoundError(
+                f"Vector DB folder '{VECTOR_DB_PATH}' not found. "
+                "Upload it to the repo or rebuild it during deployment."
+            )
+        db = FAISS.load_local(
+            VECTOR_DB_PATH,
+            embeddings,
+            allow_dangerous_deserialization=True
+        )
+        print("✅ FAISS vector DB loaded")
+
+    if reranker is None:
+        print("🧠 Loading reranker model...")
+        reranker = CrossEncoder(RERANKER_MODEL_NAME)
+        print("✅ Reranker model loaded")
 
 def get_source_info(doc):
     file = doc.metadata.get("source_file") or doc.metadata.get("source", "unknown")
@@ -72,7 +91,6 @@ User query:
         model=GENERATION_MODEL,
         contents=prompt
     )
-
     return response.text.strip()
 
 
@@ -83,6 +101,9 @@ def retrieve_and_rerank(retrieval_query: str):
     )
 
     results = retriever.invoke(retrieval_query)
+
+    if not results:
+        return [], []
 
     pairs = [(retrieval_query, doc.page_content) for doc in results]
     scores = reranker.predict(pairs)
@@ -142,20 +163,32 @@ Instructions:
         model=GENERATION_MODEL,
         contents=prompt
     )
-    return response.text
-
+    return response.text.strip()
 
 @cl.on_chat_start
 async def start():
-    await cl.Message(
-        content=(
-            "Hi! I am your Class 12 History RAG tutor.\n\n"
-            "Ask me questions like:\n"
-            "- Detailed notes on Maratha Empire\n"
-            "- Nationalism in India 1919\n"
-            "- Explain the Mughal Mansabdari system"
-        )
-    ).send()
+    loading_msg = cl.Message(content="Initializing History RAG system...")
+    await loading_msg.send()
+
+    try:
+        load_rag_components()
+
+        await loading_msg.remove()
+        await cl.Message(
+            content=(
+                "Hi! I am your Class 12 History RAG tutor.\n\n"
+                "Ask me questions like:\n"
+                "- Detailed notes on Maratha Empire\n"
+                "- Nationalism in India 1919\n"
+                "- Explain the Mughal Mansabdari system"
+            )
+        ).send()
+
+    except Exception as e:
+        await loading_msg.remove()
+        await cl.Message(
+            content=f"Startup error: {str(e)}"
+        ).send()
 
 
 @cl.on_message
@@ -170,33 +203,27 @@ async def main(message: cl.Message):
     await status.send()
 
     try:
+        # Safe even if already loaded
+        load_rag_components()
+
         retrieval_query = query_to_keyword(user_query)
         scored_results, top_docs = retrieve_and_rerank(retrieval_query)
+
+        if not top_docs:
+            await status.remove()
+            await cl.Message(content="Answer not found in knowledge base").send()
+            return
+
         context, used_sources = build_context(top_docs)
         final_answer = answer_with_gemini(user_query, context)
 
-        debug_text = "### Retrieval Debug\n\n"
-        debug_text += f"**User query:** {user_query}\n\n"
-        debug_text += f"**Retrieval query:** {retrieval_query}\n\n"
-        debug_text += "**Top Retrieved Chunks:**\n\n"
-
-        for i, (doc, score) in enumerate(scored_results[:5], 1):
-            source, page = get_source_info(doc)
-            debug_text += f"**Rank {i} | Score: {score:.4f}**\n"
-            debug_text += f"- Source: {source}"
-            if page:
-                debug_text += f", page {page}"
-            debug_text += "\n"
-            debug_text += f"- Preview: {doc.page_content[:300]}...\n\n"
-
-        debug_text += "**Sources Used:**\n"
+        sources_text = "**Sources Used:**\n"
         for source in used_sources:
-            debug_text += f"- {source}\n"
+            sources_text += f"- {source}\n"
 
         await status.remove()
-
         await cl.Message(content=final_answer).send()
-        await cl.Message(content=debug_text, author="Retrieval Debug").send()
+        await cl.Message(content=sources_text, author="Sources").send()
 
     except Exception as e:
         await status.remove()
