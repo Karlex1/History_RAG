@@ -85,6 +85,45 @@ For future improvements, the UI can be enhanced by transitioning to a **React-ba
 - Scalable frontend-backend integration for production use  
 
 ---
+## 💻 Running Locally (Setup Guide)
+
+Follow these steps to run the History RAG system on your local machine.
+
+---
+
+### Clone the Repository
+Paste following code in cmd
+```bash
+git clone https://github.com/Karlex1/History_RAG.git
+cd History_RAG
+python -m venv venv
+venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+### Create a .env file in the root directory:
+
+GEMINI_API_KEY=your_api_key_here
+
+### Ensure Required Data Exists
+
+Make sure the following folders are present:
+NCERT_Class12/        # Source documents (PDF/DOCX/TXT)
+history_vector_db/    # Prebuilt FAISS vector database
+
+⚠️ If history_vector_db/ is missing, you must run the indexing script first:
+
+python build_index.py
+
+### Run the Application
+
+chainlit run app.py
+
+### Open in Browser
+
+After running, open:
+
+http://localhost:8000
 
 ## 📌 Example Use Case
 
